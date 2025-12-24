@@ -49,19 +49,21 @@ const signup = async (req, res) => {
     }
 
     // 5️⃣ Insert user into DB
-    const [result] = await db.execute(
-      `INSERT INTO influencer 
-      (name, email, phone, password, referral_code, referred_by)
-      VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        name,
-        email,
-        phone,
-        hashedPassword,
-        myReferralCode,
-        referralCode || null,
-      ]
-    );
+const [result] = await db.execute(
+  `INSERT INTO influencer 
+   (name, email, phone, address, password, referral_code, referred_by)
+   VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  [
+    name,
+    email,
+    phone,
+    address,          // 👈 new field
+    hashedPassword,
+    myReferralCode,
+    referralCode || null,
+  ]
+);
+
 
     // 6️⃣ Generate JWT
     const payload = {
