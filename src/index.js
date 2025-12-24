@@ -25,6 +25,9 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use('/v1/auth', authRoutes);
 app.use('/v1/influencer', influencerRoute);
-app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
-});
+// app.listen(port, () => {
+//   console.log(`Example app listening on port ${port}`);
+// });
+
+
+module.exports = app;
