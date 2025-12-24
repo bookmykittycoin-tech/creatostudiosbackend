@@ -5,9 +5,7 @@ const { signupSchema, signinSchema } = require('../schemas/auth.schema');
 const { STATUS_CODE } = require('../utils/statusCode');
 const generateReferralCode = require('../utils/referralCode');
 
-
 const signup = async (req, res) => {
-  // 1️⃣ Validate input
   const parsedBody = signupSchema.safeParse(req.body);
 
   if (!parsedBody.success) {
@@ -17,10 +15,9 @@ const signup = async (req, res) => {
     });
   }
 
-  const { name, email, phone, password, referralCode } = parsedBody.data;
+  const { name, email, phone, address, password, referralCode } = parsedBody.data;
 
   try {
-    // 2️⃣ Check if user already exists
     const [existingUser] = await db.execute(
       'SELECT id FROM influencer WHERE email = ? OR phone = ?',
       [email, phone]
@@ -32,10 +29,8 @@ const signup = async (req, res) => {
       });
     }
 
-    // 3️⃣ Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // 4️⃣ Generate unique referral code
     let myReferralCode;
     let isUnique = false;
 
@@ -48,38 +43,27 @@ const signup = async (req, res) => {
       if (rows.length === 0) isUnique = true;
     }
 
-    // 5️⃣ Insert user into DB
-const [result] = await db.execute(
-  `INSERT INTO influencer 
-   (name, email, phone, address, password, referral_code, referred_by)
-   VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  [
-    name,
-    email,
-    phone,
-    address,          // 👈 new field
-    hashedPassword,
-    myReferralCode,
-    referralCode || null,
-  ]
-);
-
-
-    // 6️⃣ Generate JWT
-    const payload = {
-      id: result.insertId,
-      email,
-    };
-
-    const token = jwt.sign(
-      payload,
-      process.env.JWT_SECRET || 'super_secret_key_change_this',
-      {
-        expiresIn: process.env.JWT_EXPIRES_IN || '7d',
-      }
+    const [result] = await db.execute(
+      `INSERT INTO influencer 
+       (name, email, phone, address, password, referral_code, referred_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        name,
+        email,
+        phone,
+        address,
+        hashedPassword,
+        myReferralCode,
+        referralCode || null,
+      ]
     );
 
-    // 7️⃣ Success response (NO password)
+    const token = jwt.sign(
+      { id: result.insertId, email },
+      process.env.JWT_SECRET || 'super_secret_key_change_this',
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
+
     return res.status(STATUS_CODE.CREATED).json({
       message: 'Signup successful',
       token,
@@ -88,6 +72,7 @@ const [result] = await db.execute(
         name,
         email,
         phone,
+        address,
         referralCode: myReferralCode,
       },
     });
@@ -100,6 +85,7 @@ const [result] = await db.execute(
     });
   }
 };
+
 
 
 
