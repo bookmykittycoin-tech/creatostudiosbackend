@@ -34,6 +34,14 @@ const influencerDashboard = async (req, res) => {
   }
 };
 
+
+const verifytoken= async (req, res) => {
+ res.json({
+    message: "Secure data",
+    user: req.user
+  });
+};
 module.exports = {
   influencerDashboard,
+  verifytoken
 };
