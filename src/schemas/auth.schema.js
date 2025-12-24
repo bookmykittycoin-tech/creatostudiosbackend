@@ -38,8 +38,10 @@ const signupSchema = z.object({
     .min(4, 'Invalid referral code')
     .max(20, 'Invalid referral code')
     .optional()
+    .nullable()
     .or(z.literal('')),
 });
+
 
 
 module.exports = {
