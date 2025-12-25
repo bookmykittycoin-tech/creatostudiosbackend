@@ -21,11 +21,10 @@ const signupSchema = z.object({
     .string()
     .min(6, 'Password must be at least 6 characters'),
 
-phone: z
-  .string()
-  .trim()
-  .regex(/^\+91[6-9]\d{9}$/, 'Invalid Indian phone number (use +91XXXXXXXXXX)'),
-
+  phone: z
+    .string()
+    .trim()
+    .regex(/^[6-9]\d{9}$/, 'Invalid phone number'),
 
   address: z
     .string()
