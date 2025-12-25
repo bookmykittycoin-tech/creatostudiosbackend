@@ -4,6 +4,103 @@ const db = require('../config/db');
 const { signupSchema, signinSchema } = require('../schemas/auth.schema');
 const { STATUS_CODE } = require('../utils/statusCode');
 const generateReferralCode = require('../utils/referralCode');
+const twilio = require("twilio");
+
+
+const client = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
+// SEND OTP
+const sendOtp = async (req, res) => {
+  try {
+    const { phone } = req.body;
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: "Phone number is required",
+      });
+    }
+
+    const verification = await client.verify.v2
+      .services(process.env.TWILIO_VERIFY_SERVICE_SID)
+      .verifications.create({
+        to: phone,
+        channel: "sms",
+      });
+
+    return res.status(200).json({
+      success: true,
+      message: "OTP sent successfully",
+      status: verification.status,
+    });
+
+  } catch (error) {
+    console.error("Twilio Send OTP Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
+
+const verifyOtp = async (req, res) => {
+  try {
+    const { phone, code } = req.body;
+
+    if (!phone || !code) {
+      return res.status(400).json({
+        success: false,
+        message: "Phone and OTP are required",
+      });
+    }
+
+    const verificationCheck = await client.verify.v2
+      .services(process.env.TWILIO_VERIFY_SERVICE_SID)
+      .verificationChecks.create({
+        to: phone,
+        code,
+      });
+
+    if (verificationCheck.status !== "approved") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid OTP",
+      });
+    }
+
+    // 🔐 ISSUE OTP TOKEN (THIS IS THE KEY)
+    const otpToken = jwt.sign(
+      {
+        phone,
+        purpose: "otp_verification",
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "10m" } // short-lived
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "OTP verified successfully",
+      token: otpToken,
+    });
+
+  } catch (error) {
+    console.error("Twilio Verify OTP Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
+
 
 const signup = async (req, res) => {
   const parsedBody = signupSchema.safeParse(req.body);
@@ -166,4 +263,4 @@ const signin = async (req, res) => {
 
 
 
-module.exports = { signup,signin };
+module.exports = { signup, signin, sendOtp,verifyOtp };
