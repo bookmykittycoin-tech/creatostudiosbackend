@@ -185,16 +185,53 @@ const sendEmailOtp = async (req, res) => {
     expiresAt: Date.now() + 5 * 60 * 1000,
   });
 
-  await sendEmail(
-    email,
-    "Your OTP - Book My Kitty",
-    `
-      <h2>Email Verification</h2>
-      <p>Your OTP is:</p>
-      <h1>${otp}</h1>
-      <p>This OTP is valid for 5 minutes.</p>
-    `
-  );
+await sendEmail(
+  email,
+  "Your OTP for Creato Studios Verification",
+  `
+  <div style="font-family: Arial, sans-serif; background:#f7f7f7; padding:30px;">
+    <div style="max-width:500px; margin:auto; background:#ffffff; padding:25px; border-radius:8px;">
+      
+      <h2 style="color:#111; margin-bottom:10px;">Book My Kitty – Email Verification</h2>
+      
+      <p style="font-size:15px; color:#333;">
+        Hello,
+      </p>
+
+      <p style="font-size:15px; color:#333;">
+        Your One-Time Password (OTP) for verifying your email address is:
+      </p>
+
+      <div style="
+        font-size:28px;
+        font-weight:bold;
+        letter-spacing:6px;
+        text-align:center;
+        margin:20px 0;
+        color:#000;
+      ">
+        ${otp}
+      </div>
+
+      <p style="font-size:14px; color:#555;">
+        This OTP is valid for <b>5 minutes</b>. Please do not share it with anyone.
+      </p>
+
+      <hr style="margin:20px 0; border:none; border-top:1px solid #eee;" />
+
+      <p style="font-size:12px; color:#777;">
+        If you did not request this verification, please ignore this email.
+      </p>
+
+      <p style="font-size:12px; color:#777; margin-top:10px;">
+        — Team <b>Book My Kitty</b>
+      </p>
+
+    </div>
+  </div>
+  `
+);
+
 
   return res.json({
     success: true,
