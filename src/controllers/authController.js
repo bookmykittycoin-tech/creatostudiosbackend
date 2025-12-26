@@ -4,102 +4,9 @@ const db = require('../config/db');
 const { signupSchema, signinSchema } = require('../schemas/auth.schema');
 const { STATUS_CODE } = require('../utils/statusCode');
 const generateReferralCode = require('../utils/referralCode');
-const twilio = require("twilio");
-
-
-const client = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
-
-// SEND OTP
-const sendOtp = async (req, res) => {
-  try {
-    const { phone } = req.body;
-
-    if (!phone) {
-      return res.status(400).json({
-        success: false,
-        message: "Phone number is required",
-      });
-    }
-
-    const verification = await client.verify.v2
-      .services(process.env.TWILIO_VERIFY_SERVICE_SID)
-      .verifications.create({
-        to: phone,
-        channel: "sms",
-      });
-
-    return res.status(200).json({
-      success: true,
-      message: "OTP sent successfully",
-      status: verification.status,
-    });
-
-  } catch (error) {
-    console.error("Twilio Send OTP Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
-  }
-};
-
-
-
-const verifyOtp = async (req, res) => {
-  try {
-    const { phone, code } = req.body;
-
-    if (!phone || !code) {
-      return res.status(400).json({
-        success: false,
-        message: "Phone and OTP are required",
-      });
-    }
-
-    const verificationCheck = await client.verify.v2
-      .services(process.env.TWILIO_VERIFY_SERVICE_SID)
-      .verificationChecks.create({
-        to: phone,
-        code,
-      });
-
-    if (verificationCheck.status !== "approved") {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid OTP",
-      });
-    }
-
-    // 🔐 ISSUE OTP TOKEN (THIS IS THE KEY)
-    const otpToken = jwt.sign(
-      {
-        phone,
-        purpose: "otp_verification",
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: "10m" } // short-lived
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: "OTP verified successfully",
-      token: otpToken,
-    });
-
-  } catch (error) {
-    console.error("Twilio Verify OTP Error:", error);
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
-  }
-};
-
-
+const crypto = require("crypto");
+const sendEmail = require("../utils/mailer");
+const emailOtps = require("../utils/emailOtpStore");
 
 
 const signup = async (req, res) => {
@@ -263,4 +170,72 @@ const signin = async (req, res) => {
 
 
 
-module.exports = { signup, signin, sendOtp,verifyOtp };
+
+const sendEmailOtp = async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ message: "Email is required" });
+  }
+
+  const otp = crypto.randomInt(100000, 999999).toString();
+
+  emailOtps.set(email, {
+    otp,
+    expiresAt: Date.now() + 5 * 60 * 1000,
+  });
+
+  await sendEmail(
+    email,
+    "Your OTP - Book My Kitty",
+    `
+      <h2>Email Verification</h2>
+      <p>Your OTP is:</p>
+      <h1>${otp}</h1>
+      <p>This OTP is valid for 5 minutes.</p>
+    `
+  );
+
+  return res.json({
+    success: true,
+    message: "OTP sent to email",
+  });
+};
+
+
+const verifyEmailOtp = async (req, res) => {
+  const { email, code } = req.body;
+
+  const record = emailOtps.get(email);
+
+  if (!record) {
+    return res.status(400).json({ message: "OTP not found" });
+  }
+
+  if (Date.now() > record.expiresAt) {
+    emailOtps.delete(email);
+    return res.status(400).json({ message: "OTP expired" });
+  }
+
+  if (record.otp !== code) {
+    return res.status(400).json({ message: "Invalid OTP" });
+  }
+
+  emailOtps.delete(email);
+
+  const otpToken = jwt.sign(
+    { email, purpose: "email_otp" },
+    process.env.JWT_SECRET,
+    { expiresIn: "10m" }
+  );
+
+  return res.json({
+    success: true,
+    message: "Email verified",
+    token: otpToken,
+  });
+};
+
+
+
+module.exports = { signup,signin,sendEmailOtp, verifyEmailOtp };
