@@ -224,7 +224,7 @@ await sendEmail(
       </p>
 
       <p style="font-size:12px; color:#777; margin-top:10px;">
-        — Team <b>Book My Kitty</b>
+        — Team <b>Creato Studios</b>
       </p>
 
     </div>
