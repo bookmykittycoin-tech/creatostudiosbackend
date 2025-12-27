@@ -10,8 +10,6 @@ const allCampaigns = async (req, res) => {
         campaign_name,
         description,
         status,
-        created_at,
-        updated_at
       FROM campaigns
       ORDER BY created_at DESC
       `
