@@ -3,36 +3,34 @@ const { STATUS_CODE } = require('../utils/statusCode');
 
 const influencerDashboard = async (req, res) => {
   try {
-    const influencerId = req.user.id; // from authMiddleware
+    const influencerId = req.user.id;
 
     const [rows] = await db.execute(
-      `SELECT 
-         c.id AS campaignId,
-         c.name AS campaignName,
-         c.description,
-         t.clicks,
-         t.conversions,
-         t.created_at AS joinedAt
-       FROM tracking t
-       INNER JOIN campaign c ON c.id = t.campaign_id
-       WHERE t.influencer_id = ?`,
+      `
+      SELECT 
+        clicks,
+        conversions
+      FROM tracking
+      WHERE influencer_id = ?
+      LIMIT 1
+      `,
       [influencerId]
     );
 
-    return res.status(STATUS_CODE.OK).json({
-      message: 'Influencer dashboard data',
-      totalCampaigns: rows.length,
-      data: rows,
+    return res.status(200).json({
+      success: true,
+      clicks: rows[0]?.clicks || 0,
+      conversions: rows[0]?.conversions || 0
     });
 
   } catch (error) {
-    console.error('DASHBOARD ERROR:', error);
-
-    return res.status(STATUS_CODE.INTERNAL_SERVER_ERROR).json({
-      message: 'Unable to fetch dashboard data',
+    return res.status(500).json({
+      success: false,
+      message: 'Error fetching data'
     });
   }
 };
+
 
 
 const verifytoken= async (req, res) => {
