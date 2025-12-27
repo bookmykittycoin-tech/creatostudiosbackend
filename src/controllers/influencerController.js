@@ -11,34 +11,36 @@ const influencerDashboard = async (req, res) => {
         i.id,
         i.email,
         i.referral_code,
-        IFNULL(t.clicks, 0) AS clicks,
-        IFNULL(t.conversions, 0) AS conversions
+        IFNULL(SUM(t.clicks), 0) AS clicks,
+        IFNULL(SUM(t.conversions), 0) AS conversions,
+        GROUP_CONCAT(DISTINCT t.campaign_id) AS campaign_ids
       FROM influencer i
-      LEFT JOIN tracking t 
-        ON t.influencer_id = i.id
+      LEFT JOIN tracking t ON t.influencer_id = i.id
       WHERE i.id = ?
-      LIMIT 1
+      GROUP BY i.id
       `,
       [influencerId]
     );
 
-    return res.status(200).json({
+    return res.json({
       success: true,
-      id: rows[0]?.id || null,
-      email: rows[0]?.email || null,
-      referral_code: rows[0]?.referral_code || null,
-      clicks: rows[0]?.clicks || 0,
-      conversions: rows[0]?.conversions || 0
+      id: rows[0]?.id,
+      email: rows[0]?.email,
+      referral_code: rows[0]?.referral_code,
+      clicks: Number(rows[0]?.clicks || 0),
+      conversions: Number(rows[0]?.conversions || 0),
+      campaign_ids: rows[0]?.campaign_ids
+        ? rows[0].campaign_ids.split(",").map(Number)
+        : []
     });
 
-  } catch (error) {
-    console.error("Dashboard Error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Error fetching data"
-    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false });
   }
 };
+
+
 
 
 

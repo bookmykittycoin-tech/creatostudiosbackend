@@ -32,7 +32,41 @@ const allCampaigns = async (req, res) => {
   }
 };
 
+const getCampaignsByIds = async (req, res) => {
+  try {
+    const { campaign_ids } = req.body;
+
+    if (!campaign_ids || !campaign_ids.length) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const placeholders = campaign_ids.map(() => "?").join(",");
+
+    const [rows] = await db.execute(
+      `
+      SELECT 
+        id,
+        campaign_name,
+        status,
+        description,
+        created_at
+      FROM campaigns
+      WHERE id IN (${placeholders})
+      `,
+      campaign_ids
+    );
+
+    res.json({ success: true, data: rows });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false });
+  }
+};
+
+
 
 module.exports={
-    allCampaigns
+    allCampaigns,
+    getCampaignsByIds
 }
