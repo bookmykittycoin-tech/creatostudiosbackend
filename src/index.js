@@ -7,6 +7,7 @@ const port =process.env.PORT;
 
 const authRoutes = require('./routes/authRoutes');
 const influencerRoute = require('./routes/influencerRoutes')
+const campaignsRouter = require('./routes/campaignsRoutes')
 
 
 app.use(express.json());
@@ -34,6 +35,7 @@ app.use(
 
 app.use('/v1/auth', authRoutes);
 app.use('/v1/influencer', influencerRoute);
+app.use('/v1/campaigns', campaignsRouter);
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
 });
