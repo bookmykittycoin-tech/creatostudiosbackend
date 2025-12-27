@@ -8,6 +8,8 @@ const influencerDashboard = async (req, res) => {
     const [rows] = await db.execute(
       `
       SELECT 
+        i.id,
+        i.email,
         i.referral_code,
         IFNULL(t.clicks, 0) AS clicks,
         IFNULL(t.conversions, 0) AS conversions
@@ -22,6 +24,8 @@ const influencerDashboard = async (req, res) => {
 
     return res.status(200).json({
       success: true,
+      id: rows[0]?.id || null,
+      email: rows[0]?.email || null,
       referral_code: rows[0]?.referral_code || null,
       clicks: rows[0]?.clicks || 0,
       conversions: rows[0]?.conversions || 0
@@ -35,6 +39,7 @@ const influencerDashboard = async (req, res) => {
     });
   }
 };
+
 
 
 
