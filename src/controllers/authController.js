@@ -13,8 +13,8 @@ const signup = async (req, res) => {
   const parsedBody = signupSchema.safeParse(req.body);
 
   if (!parsedBody.success) {
-    return res.status(STATUS_CODE.BAD_REQUEST).json({
-      message: 'Please enter valid input values.',
+    return res.status(400).json({
+      message: 'Invalid input',
       errors: parsedBody.error.errors,
     });
   }
@@ -22,19 +22,40 @@ const signup = async (req, res) => {
   const { name, email, phone, address, password, referralCode } = parsedBody.data;
 
   try {
+    // 1️⃣ Check duplicate user
     const [existingUser] = await db.execute(
       'SELECT id FROM influencer WHERE email = ? OR phone = ?',
       [email, phone]
     );
 
     if (existingUser.length > 0) {
-      return res.status(STATUS_CODE.CONFLICT).json({
-        message: 'User already exists with this email or phone.',
+      return res.status(409).json({
+        message: 'User already exists',
       });
     }
 
+    // 2️⃣ Validate referral code (if provided)
+    let referrerId = null;
+
+    if (referralCode) {
+      const [referrer] = await db.execute(
+        'SELECT id FROM influencer WHERE referral_code = ?',
+        [referralCode]
+      );
+
+      if (referrer.length === 0) {
+        return res.status(400).json({
+          message: 'Invalid referral code',
+        });
+      }
+
+      referrerId = referrer[0].id;
+    }
+
+    // 3️⃣ Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // 4️⃣ Generate unique referral code
     let myReferralCode;
     let isUnique = false;
 
@@ -47,6 +68,7 @@ const signup = async (req, res) => {
       if (rows.length === 0) isUnique = true;
     }
 
+    // 5️⃣ Insert new user
     const [result] = await db.execute(
       `INSERT INTO influencer 
        (name, email, phone, address, password, referral_code, referred_by)
@@ -62,33 +84,50 @@ const signup = async (req, res) => {
       ]
     );
 
+    const newUserId = result.insertId;
+
+    // 6️⃣ TRACKING LOGIC (🔥 IMPORTANT PART)
+    if (referrerId) {
+      await db.execute(
+        `
+        INSERT INTO tracking (influencer_id, campaign_id, clicks, conversions)
+        VALUES (?, 1, 1, 1)
+        ON DUPLICATE KEY UPDATE
+          clicks = clicks + 1,
+          conversions = conversions + 1,
+          updated_at = CURRENT_TIMESTAMP
+        `,
+        [referrerId]
+      );
+    }
+
+    // 7️⃣ JWT Token
     const token = jwt.sign(
-      { id: result.insertId, email },
-      process.env.JWT_SECRET || 'super_secret_key_change_this',
-      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+      { id: newUserId, email },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
     );
 
-    return res.status(STATUS_CODE.CREATED).json({
+    return res.status(201).json({
       message: 'Signup successful',
       token,
       data: {
-        id: result.insertId,
+        id: newUserId,
         name,
         email,
         phone,
-        address,
         referralCode: myReferralCode,
       },
     });
 
   } catch (error) {
     console.error('SIGNUP ERROR:', error);
-
-    return res.status(STATUS_CODE.INTERNAL_SERVER_ERROR).json({
-      message: 'Something went wrong. Please try again later.',
+    return res.status(500).json({
+      message: 'Server error',
     });
   }
 };
+
 
 
 
