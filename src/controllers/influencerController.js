@@ -1,6 +1,16 @@
 const db = require('../config/db');
 const { STATUS_CODE } = require('../utils/statusCode');
 
+/**
+ * Influencer Dashboard
+ * Returns:
+ * - id
+ * - email
+ * - referral_code
+ * - clicks
+ * - conversions
+ * - campaign_ids[]
+ */
 const influencerDashboard = async (req, res) => {
   try {
     const influencerId = req.user.id;
@@ -11,47 +21,60 @@ const influencerDashboard = async (req, res) => {
         i.id,
         i.email,
         i.referral_code,
-        IFNULL(SUM(t.clicks), 0) AS clicks,
-        IFNULL(SUM(t.conversions), 0) AS conversions,
+        COALESCE(SUM(t.clicks), 0) AS clicks,
+        COALESCE(SUM(t.conversions), 0) AS conversions,
         GROUP_CONCAT(DISTINCT t.campaign_id) AS campaign_ids
       FROM influencer i
-      LEFT JOIN tracking t ON t.influencer_id = i.id
+      LEFT JOIN tracking t 
+        ON t.influencer_id = i.id
       WHERE i.id = ?
       GROUP BY i.id
       `,
       [influencerId]
     );
 
-    return res.json({
+    if (!rows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Influencer not found"
+      });
+    }
+
+    const row = rows[0];
+
+    return res.status(200).json({
       success: true,
-      id: rows[0]?.id,
-      email: rows[0]?.email,
-      referral_code: rows[0]?.referral_code,
-      clicks: Number(rows[0]?.clicks || 0),
-      conversions: Number(rows[0]?.conversions || 0),
-      campaign_ids: rows[0]?.campaign_ids
-        ? rows[0].campaign_ids.split(",").map(Number)
+      id: row.id,
+      email: row.email,
+      referral_code: row.referral_code,
+      clicks: Number(row.clicks || 0),
+      conversions: Number(row.conversions || 0),
+      campaign_ids: row.campaign_ids
+        ? row.campaign_ids.split(',').map(id => Number(id))
         : []
     });
 
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false });
+  } catch (error) {
+    console.error("Influencer Dashboard Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load dashboard"
+    });
   }
 };
 
 
-
-
-
-
-
-const verifytoken= async (req, res) => {
- res.json({
+/**
+ * Token Verification
+ */
+const verifytoken = async (req, res) => {
+  res.json({
+    success: true,
     message: "Secure data",
     user: req.user
   });
 };
+
 module.exports = {
   influencerDashboard,
   verifytoken
