@@ -6,32 +6,38 @@ const db = require('../config/db');
  */
 const allCampaigns = async (req, res) => {
   try {
+    const influencerId = req.user.id;
+
     const [rows] = await db.execute(`
       SELECT 
-        id,
-        campaign_name,
-        description,
-        status,
-        payout,
-        brand_name,
-        campaign_link,
-        created_at
-      FROM campaigns
-      ORDER BY created_at DESC
-    `);
+        c.id,
+        c.campaign_name,
+        c.description,
+        c.brand_name,
+        c.payout,
+        c.campaign_link,
+        c.status,
+        c.created_at,
+        c.updated_at,
+        CASE 
+          WHEN t.influencer_id IS NOT NULL THEN 1 
+          ELSE 0 
+        END AS joined
+      FROM campaigns c
+      LEFT JOIN tracking t 
+        ON t.campaign_id = c.id 
+        AND t.influencer_id = ?
+      ORDER BY c.created_at DESC
+    `, [influencerId]);
 
-    return res.status(200).json({
+    res.json({
       success: true,
-      total: rows.length,
       data: rows
     });
 
   } catch (error) {
     console.error("Fetch campaigns error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Unable to fetch campaigns"
-    });
+    res.status(500).json({ success: false });
   }
 };
 
