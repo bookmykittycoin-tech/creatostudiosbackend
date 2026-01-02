@@ -63,6 +63,61 @@ const influencerDashboard = async (req, res) => {
   }
 };
 
+// referreed influencers controller
+const getReferredInfluencers = async (req, res) => {
+  try {
+    const influencerId = req.user.id;
+
+    // Get current influencer referral code
+    const [[user]] = await db.execute(
+      `SELECT referral_code FROM influencers WHERE id = ? LIMIT 1`,
+      [influencerId]
+    );
+
+    if (!user || !user.referral_code) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const referralCode = user.referral_code;
+
+    // Fetch all influencers referred by this user
+    const [rows] = await db.execute(
+      `
+      SELECT 
+        i.id,
+        i.name,
+        i.email,
+        i.referral_code,
+        i.created_at,
+        IFNULL(SUM(t.clicks), 0) AS clicks,
+        IFNULL(SUM(t.conversions), 0) AS conversions
+      FROM influencers i
+      LEFT JOIN tracking t 
+        ON t.influencer_id = i.id
+      WHERE i.referred_by = ?
+      GROUP BY i.id
+      ORDER BY i.created_at DESC
+      `,
+      [referralCode]
+    );
+
+    return res.json({
+      success: true,
+      data: rows
+    });
+
+  } catch (error) {
+    console.error("Referral fetch error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Unable to fetch referred influencers"
+    });
+  }
+};
+
+
+
+
 
 /**
  * Token Verification
@@ -76,6 +131,7 @@ const verifytoken = async (req, res) => {
 };
 
 module.exports = {
+  getReferredInfluencers,
   influencerDashboard,
   verifytoken
 };
