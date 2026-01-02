@@ -8,7 +8,8 @@ const allCampaigns = async (req, res) => {
   try {
     const influencerId = req.user.id;
 
-    const [rows] = await db.execute(`
+    const [rows] = await db.execute(
+      `
       SELECT 
         c.id,
         c.campaign_name,
@@ -20,15 +21,17 @@ const allCampaigns = async (req, res) => {
         c.created_at,
         c.updated_at,
         CASE 
-          WHEN t.influencer_id IS NOT NULL THEN 1 
+          WHEN EXISTS (
+            SELECT 1 FROM tracking t2 
+            WHERE t2.campaign_id = c.id AND t2.influencer_id = ?
+          ) THEN 1 
           ELSE 0 
         END AS joined
       FROM campaigns c
-      LEFT JOIN tracking t 
-        ON t.campaign_id = c.id 
-        AND t.influencer_id = ?
       ORDER BY c.created_at DESC
-    `, [influencerId]);
+      `,
+      [influencerId]
+    );
 
     res.json({
       success: true,
@@ -37,12 +40,9 @@ const allCampaigns = async (req, res) => {
 
   } catch (error) {
     console.error("Fetch campaigns error:", error);
-    res.status(500).json({ success: false });
+    res.status(500).json({ success: false, message: "Unable to fetch campaigns" });
   }
 };
-
-
-
 
 /**
  * GET CAMPAIGNS BY IDS (for Joined Campaigns)
@@ -56,6 +56,7 @@ const getCampaignsByIds = async (req, res) => {
       return res.json({ success: true, data: [] });
     }
 
+    // prepare placeholders safely
     const placeholders = campaign_ids.map(() => "?").join(",");
 
     const [rows] = await db.execute(
@@ -90,8 +91,12 @@ const getCampaignsByIds = async (req, res) => {
 };
 
 
-
+/**
+ * JOIN CAMPAIGN
+ * /v1/campaigns/join
+ */
 const joinCampaign = async (req, res) => {
+  const conn = db; // assuming db is mysql2 pool or connection with .execute; adjust if you use transactions
   try {
     const influencerId = req.user.id;
     const { campaignId } = req.body;
@@ -103,12 +108,26 @@ const joinCampaign = async (req, res) => {
       });
     }
 
-    // 1️⃣ Check if already joined
-    const [existing] = await db.execute(
+    // 0) validate campaign exists
+    const [campaignRows] = await conn.execute(
+      `SELECT id FROM campaigns WHERE id = ? LIMIT 1`,
+      [campaignId]
+    );
+
+    if (!campaignRows || campaignRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Campaign not found"
+      });
+    }
+
+    // 1) Check if already joined
+    const [existing] = await conn.execute(
       `
       SELECT id 
       FROM tracking 
       WHERE influencer_id = ? AND campaign_id = ?
+      LIMIT 1
       `,
       [influencerId, campaignId]
     );
@@ -120,12 +139,14 @@ const joinCampaign = async (req, res) => {
       });
     }
 
-    // 2️⃣ Insert new join record
-    await db.execute(
+    // 2) Insert new join record
+    // Use a safe insert; if your tracking has a unique constraint (influencer_id, campaign_id),
+    // you could use INSERT IGNORE or handle duplicate-key error to avoid race issues.
+    await conn.execute(
       `
       INSERT INTO tracking 
-      (influencer_id, campaign_id, clicks, conversions)
-      VALUES (?, ?, 0, 0)
+      (influencer_id, campaign_id, clicks, conversions, created_at)
+      VALUES (?, ?, 0, 0, NOW())
       `,
       [influencerId, campaignId]
     );
@@ -136,6 +157,14 @@ const joinCampaign = async (req, res) => {
     });
 
   } catch (error) {
+    // If duplicate key might happen due to race, handle it gracefully
+    if (error && (error.code === 'ER_DUP_ENTRY' || error.errno === 1062)) {
+      return res.status(200).json({
+        success: true,
+        message: "Already joined this campaign"
+      });
+    }
+
     console.error("Join Campaign Error:", error);
     return res.status(500).json({
       success: false,
@@ -143,7 +172,6 @@ const joinCampaign = async (req, res) => {
     });
   }
 };
-
 
 module.exports = {
   allCampaigns,
