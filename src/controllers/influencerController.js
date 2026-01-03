@@ -70,10 +70,10 @@ const getReferredInfluencers = async (req, res) => {
 
     // Get current influencer referral code
     const [[user]] = await db.execute(
-      `SELECT referral_code FROM influencers WHERE id = ? LIMIT 1`,
+      `SELECT referral_code FROM influencer WHERE id = ? LIMIT 1`,
       [influencerId]
     );
-
+    
     if (!user || !user.referral_code) {
       return res.json({ success: true, data: [] });
     }
@@ -91,7 +91,7 @@ const getReferredInfluencers = async (req, res) => {
         i.created_at,
         IFNULL(SUM(t.clicks), 0) AS clicks,
         IFNULL(SUM(t.conversions), 0) AS conversions
-      FROM influencers i
+      FROM influencer i
       LEFT JOIN tracking t 
         ON t.influencer_id = i.id
       WHERE i.referred_by = ?
