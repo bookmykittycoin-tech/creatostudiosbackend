@@ -17,53 +17,49 @@ const influencerDashboard = async (req, res) => {
     const influencerId = req.user.id;
 
     // 1️⃣ Campaign earnings
-    const [[campaignStats]] = await db.execute(
+    const [[campaign]] = await db.execute(
       `
       SELECT
-        IFNULL(SUM(t.clicks), 0) AS campaign_clicks,
-        IFNULL(SUM(t.conversions), 0) AS campaign_conversions,
-        IFNULL(SUM(t.conversions * c.payout), 0) AS campaign_earnings
+        IFNULL(SUM(t.conversions),0) AS campaign_conversions,
+        IFNULL(SUM(t.conversions * c.payout),0) AS campaign_earnings
       FROM tracking t
       JOIN campaigns c ON c.id = t.campaign_id
       WHERE t.influencer_id = ?
+        AND t.source = 'campaign'
       `,
       [influencerId]
     );
 
-    // 2️⃣ Referral earnings
-    const [[referralStats]] = await db.execute(
+    // 2️⃣ Referral earnings (₹50 per conversion)
+    const [[referral]] = await db.execute(
       `
       SELECT
-        IFNULL(SUM(clicks), 0) AS referral_clicks,
-        IFNULL(SUM(conversions), 0) AS referral_conversions,
-        IFNULL(SUM(referral_reward), 0) AS referral_earnings
+        IFNULL(SUM(conversions),0) AS referral_conversions,
+        IFNULL(SUM(conversions * referral_reward),0) AS referral_earnings
       FROM referrals
       WHERE referrer_id = ?
       `,
       [influencerId]
     );
 
-    // 3️⃣ Influencer + Manager
+    // 3️⃣ Influencer basic + manager
     const [[user]] = await db.execute(
       `
-      SELECT 
+      SELECT
         i.id,
         i.email,
         i.referral_code,
         m.name AS manager_name,
         m.email AS manager_email
       FROM influencer i
-      LEFT JOIN referrals r ON r.referred_id = i.id
-      LEFT JOIN influencer m ON m.id = r.referrer_id
+      LEFT JOIN influencer m ON i.referred_by = m.referral_code
       WHERE i.id = ?
-      LIMIT 1
       `,
       [influencerId]
     );
 
-    const total_earnings =
-      Number(campaignStats.campaign_earnings) +
-      Number(referralStats.referral_earnings);
+    const campaignMoney = Number(campaign.campaign_earnings || 0);
+    const referralMoney = Number(referral.referral_earnings || 0);
 
     return res.json({
       success: true,
@@ -75,23 +71,25 @@ const influencerDashboard = async (req, res) => {
         manager_name: user.manager_name,
         manager_email: user.manager_email,
 
-        campaign_clicks: Number(campaignStats.campaign_clicks),
-        campaign_conversions: Number(campaignStats.campaign_conversions),
-        campaign_earnings: Number(campaignStats.campaign_earnings),
+        // Campaign box
+        campaign_conversions: Number(campaign.campaign_conversions),
+        campaign_earnings: campaignMoney,
 
-        referral_clicks: Number(referralStats.referral_clicks),
-        referral_conversions: Number(referralStats.referral_conversions),
-        referral_earnings: Number(referralStats.referral_earnings),
+        // Referral box
+        referral_conversions: Number(referral.referral_conversions),
+        referral_earnings: referralMoney,
 
-        total_earnings: Number(total_earnings)
+        // Total box
+        total_earnings: campaignMoney + referralMoney
       }
     });
 
   } catch (err) {
-    console.error("Influencer dashboard error:", err);
-    res.status(500).json({ success: false, message: "Dashboard load failed" });
+    console.error("Dashboard error:", err);
+    res.status(500).json({ success: false, message: "Dashboard failed" });
   }
 };
+
 
 
 
