@@ -47,8 +47,15 @@ phone: z
 });
 
 
+const adminSigninSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(6),
+});
+
+
 
 module.exports = {
   signupSchema,
   signinSchema,
+  adminSigninSchema
 };

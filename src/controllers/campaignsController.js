@@ -22,8 +22,10 @@ const allCampaigns = async (req, res) => {
         c.updated_at,
         CASE 
           WHEN EXISTS (
-            SELECT 1 FROM tracking t2 
-            WHERE t2.campaign_id = c.id AND t2.influencer_id = ?
+            SELECT 1 FROM tracking t 
+            WHERE t.campaign_id = c.id 
+              AND t.influencer_id = ?
+              AND t.source = 'campaign'
           ) THEN 1 
           ELSE 0 
         END AS joined
@@ -33,19 +35,23 @@ const allCampaigns = async (req, res) => {
       [influencerId]
     );
 
-    res.json({
+    return res.json({
       success: true,
       data: rows
     });
 
   } catch (error) {
     console.error("Fetch campaigns error:", error);
-    res.status(500).json({ success: false, message: "Unable to fetch campaigns" });
+    return res.status(500).json({
+      success: false,
+      message: "Unable to fetch campaigns"
+    });
   }
 };
 
+
 /**
- * GET CAMPAIGNS BY IDS (for Joined Campaigns)
+ * GET CAMPAIGNS BY IDS (Joined Campaigns)
  * /v1/campaigns/by-ids
  */
 const getCampaignsByIds = async (req, res) => {
@@ -56,7 +62,6 @@ const getCampaignsByIds = async (req, res) => {
       return res.json({ success: true, data: [] });
     }
 
-    // prepare placeholders safely
     const placeholders = campaign_ids.map(() => "?").join(",");
 
     const [rows] = await db.execute(
@@ -96,7 +101,8 @@ const getCampaignsByIds = async (req, res) => {
  * /v1/campaigns/join
  */
 const joinCampaign = async (req, res) => {
-  const conn = db; // assuming db is mysql2 pool or connection with .execute; adjust if you use transactions
+  const conn = await db.getConnection();
+
   try {
     const influencerId = req.user.id;
     const { campaignId } = req.body;
@@ -108,48 +114,54 @@ const joinCampaign = async (req, res) => {
       });
     }
 
-    // 0) validate campaign exists
-    const [campaignRows] = await conn.execute(
+    await conn.beginTransaction();
+
+    // 1️⃣ Validate campaign
+    const [[campaign]] = await conn.execute(
       `SELECT id FROM campaigns WHERE id = ? LIMIT 1`,
       [campaignId]
     );
 
-    if (!campaignRows || campaignRows.length === 0) {
+    if (!campaign) {
+      await conn.rollback();
       return res.status(404).json({
         success: false,
         message: "Campaign not found"
       });
     }
 
-    // 1) Check if already joined
-    const [existing] = await conn.execute(
+    // 2️⃣ Check if already joined
+    const [[existing]] = await conn.execute(
       `
       SELECT id 
       FROM tracking 
-      WHERE influencer_id = ? AND campaign_id = ?
+      WHERE influencer_id = ? 
+        AND campaign_id = ?
+        AND source = 'campaign'
       LIMIT 1
       `,
       [influencerId, campaignId]
     );
 
-    if (existing.length > 0) {
-      return res.status(200).json({
+    if (existing) {
+      await conn.rollback();
+      return res.json({
         success: true,
         message: "Already joined this campaign"
       });
     }
 
-    // 2) Insert new join record
-    // Use a safe insert; if your tracking has a unique constraint (influencer_id, campaign_id),
-    // you could use INSERT IGNORE or handle duplicate-key error to avoid race issues.
+    // 3️⃣ Insert campaign join record
     await conn.execute(
       `
-      INSERT INTO tracking 
-      (influencer_id, campaign_id, clicks, conversions, created_at)
-      VALUES (?, ?, 0, 0, NOW())
+      INSERT INTO tracking
+        (influencer_id, campaign_id, clicks, conversions, source, created_at)
+      VALUES (?, ?, 0, 0, 'campaign', NOW())
       `,
       [influencerId, campaignId]
     );
+
+    await conn.commit();
 
     return res.status(201).json({
       success: true,
@@ -157,9 +169,10 @@ const joinCampaign = async (req, res) => {
     });
 
   } catch (error) {
-    // If duplicate key might happen due to race, handle it gracefully
-    if (error && (error.code === 'ER_DUP_ENTRY' || error.errno === 1062)) {
-      return res.status(200).json({
+    await conn.rollback();
+
+    if (error.code === 'ER_DUP_ENTRY' || error.errno === 1062) {
+      return res.json({
         success: true,
         message: "Already joined this campaign"
       });
@@ -170,6 +183,8 @@ const joinCampaign = async (req, res) => {
       success: false,
       message: "Unable to join campaign"
     });
+  } finally {
+    conn.release();
   }
 };
 

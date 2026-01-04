@@ -1,7 +1,7 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const db = require('../config/db');
-const { signupSchema, signinSchema } = require('../schemas/auth.schema');
+const { signupSchema, signinSchema, adminSigninSchema } = require('../schemas/auth.schema');
 const { STATUS_CODE } = require('../utils/statusCode');
 const generateReferralCode = require('../utils/referralCode');
 const crypto = require("crypto");
@@ -20,33 +20,34 @@ const signup = async (req, res) => {
   }
 
   const { name, email, phone, address, password, referralCode } = parsedBody.data;
+  const conn = await db.getConnection();
 
   try {
+    await conn.beginTransaction();
+
     // 1️⃣ Check duplicate user
-    const [existingUser] = await db.execute(
+    const [existingUser] = await conn.execute(
       'SELECT id FROM influencer WHERE email = ? OR phone = ?',
       [email, phone]
     );
 
     if (existingUser.length > 0) {
-      return res.status(409).json({
-        message: 'User already exists',
-      });
+      await conn.rollback();
+      return res.status(409).json({ message: 'User already exists' });
     }
 
-    // 2️⃣ Validate referral code (if provided)
+    // 2️⃣ Validate referral code
     let referrerId = null;
 
     if (referralCode) {
-      const [referrer] = await db.execute(
+      const [referrer] = await conn.execute(
         'SELECT id FROM influencer WHERE referral_code = ?',
         [referralCode]
       );
 
-      if (referrer.length === 0) {
-        return res.status(400).json({
-          message: 'Invalid referral code',
-        });
+      if (!referrer.length) {
+        await conn.rollback();
+        return res.status(400).json({ message: 'Invalid referral code' });
       }
 
       referrerId = referrer[0].id;
@@ -57,22 +58,22 @@ const signup = async (req, res) => {
 
     // 4️⃣ Generate unique referral code
     let myReferralCode;
-    let isUnique = false;
-
-    while (!isUnique) {
+    while (true) {
       myReferralCode = generateReferralCode();
-      const [rows] = await db.execute(
+      const [rows] = await conn.execute(
         'SELECT id FROM influencer WHERE referral_code = ?',
         [myReferralCode]
       );
-      if (rows.length === 0) isUnique = true;
+      if (!rows.length) break;
     }
 
-    // 5️⃣ Insert new user
-    const [result] = await db.execute(
-      `INSERT INTO influencer 
-       (name, email, phone, address, password, referral_code, referred_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    // 5️⃣ Insert influencer
+    const [result] = await conn.execute(
+      `
+      INSERT INTO influencer 
+      (name, email, phone, address, password, referral_code, referred_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
       [
         name,
         email,
@@ -86,22 +87,24 @@ const signup = async (req, res) => {
 
     const newUserId = result.insertId;
 
-    // 6️⃣ TRACKING LOGIC (🔥 IMPORTANT PART)
+    // 6️⃣ Referral conversion (NOT clicks)
     if (referrerId) {
-      await db.execute(
+      await conn.execute(
         `
-        INSERT INTO tracking (influencer_id, campaign_id, clicks, conversions)
-        VALUES (?, 1, 1, 1)
+        INSERT INTO referrals
+          (referrer_id, referred_id, clicks, conversions, referral_reward)
+        VALUES (?, ?, 0, 1, 0)
         ON DUPLICATE KEY UPDATE
-          clicks = clicks + 1,
           conversions = conversions + 1,
           updated_at = CURRENT_TIMESTAMP
         `,
-        [referrerId]
+        [referrerId, newUserId]
       );
     }
 
-    // 7️⃣ JWT Token
+    await conn.commit();
+
+    // 7️⃣ JWT
     const token = jwt.sign(
       { id: newUserId, email },
       process.env.JWT_SECRET,
@@ -121,12 +124,14 @@ const signup = async (req, res) => {
     });
 
   } catch (error) {
+    await conn.rollback();
     console.error('SIGNUP ERROR:', error);
-    return res.status(500).json({
-      message: 'Server error',
-    });
+    return res.status(500).json({ message: 'Server error' });
+  } finally {
+    conn.release();
   }
 };
+
 
 
 
@@ -207,6 +212,80 @@ const signin = async (req, res) => {
 };
 
 
+const adminSignin = async (req, res) => {
+  // 1️⃣ Validate input
+  const parsedBody = adminSigninSchema.safeParse(req.body);
+
+  if (!parsedBody.success) {
+    return res.status(STATUS_CODE.BAD_REQUEST).json({
+      message: 'Invalid input values',
+      errors: parsedBody.error.errors,
+    });
+  }
+
+  const { email, password } = parsedBody.data;
+
+  try {
+    // 2️⃣ Find admin by email
+    const [rows] = await db.execute(
+      `SELECT id, name, email, password, role 
+       FROM admin 
+       WHERE email = ?`,
+      [email]
+    );
+
+    if (rows.length === 0) {
+      return res.status(STATUS_CODE.UNAUTHORIZED).json({
+        message: 'Invalid email or password',
+      });
+    }
+
+    const admin = rows[0];
+
+    // 3️⃣ Verify password
+    const isPasswordValid = await bcrypt.compare(password, admin.password);
+
+    if (!isPasswordValid) {
+      return res.status(STATUS_CODE.UNAUTHORIZED).json({
+        message: 'Invalid email or password',
+      });
+    }
+
+    // 4️⃣ Generate JWT (Admin Token)
+    const token = jwt.sign(
+      {
+        id: admin.id,
+        email: admin.email,
+        role: admin.role || 'admin',
+      },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+      }
+    );
+
+    // 5️⃣ Success response
+    return res.status(STATUS_CODE.OK).json({
+      message: 'Admin signin successful',
+      token,
+      data: {
+        id: admin.id,
+        name: admin.name,
+        email: admin.email,
+        role: admin.role,
+      },
+    });
+
+  } catch (error) {
+    console.error('ADMIN SIGNIN ERROR:', error);
+
+    return res.status(STATUS_CODE.INTERNAL_SERVER_ERROR).json({
+      message: 'Something went wrong. Please try again later.',
+    });
+  }
+};
+
+
 
 
 
@@ -224,10 +303,10 @@ const sendEmailOtp = async (req, res) => {
     expiresAt: Date.now() + 5 * 60 * 1000,
   });
 
-await sendEmail(
-  email,
-  "Your OTP for Creato Studios Verification",
-  `
+  await sendEmail(
+    email,
+    "Your OTP for Creato Studios Verification",
+    `
   <div style="font-family: Arial, sans-serif; background:#f7f7f7; padding:30px;">
     <div style="max-width:500px; margin:auto; background:#ffffff; padding:25px; border-radius:8px;">
       
@@ -269,7 +348,7 @@ await sendEmail(
     </div>
   </div>
   `
-);
+  );
 
 
   return res.json({
@@ -314,4 +393,4 @@ const verifyEmailOtp = async (req, res) => {
 
 
 
-module.exports = { signup,signin,sendEmailOtp, verifyEmailOtp };
+module.exports = { signup, signin, sendEmailOtp, verifyEmailOtp, adminSignin };
