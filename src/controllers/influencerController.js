@@ -14,47 +14,85 @@ const { STATUS_CODE } = require('../utils/statusCode');
 // controllers/influencer.controller.js (update influencerDashboard)
 const influencerDashboard = async (req, res) => {
   try {
-    const influencerId = Number(req.user.id);
-    if (!influencerId) return res.status(400).json({ success:false, message:'Invalid user' });
+    const influencerId = req.user.id;
 
-    // get influencer + manager detail
-    const [[row]] = await db.execute(
+    // 1️⃣ Campaign earnings
+    const [[campaignStats]] = await db.execute(
       `
       SELECT
-        i.id, i.email, i.name, i.referral_code,
-        i.referred_by,
-        m.id AS manager_id,
-        m.name AS manager_name,
-        m.email AS manager_email
-      FROM influencer i
-      LEFT JOIN influencer m ON i.referred_by = m.referral_code
-      WHERE i.id = ? LIMIT 1
+        IFNULL(SUM(t.clicks), 0) AS campaign_clicks,
+        IFNULL(SUM(t.conversions), 0) AS campaign_conversions,
+        IFNULL(SUM(t.conversions * c.payout), 0) AS campaign_earnings
+      FROM tracking t
+      JOIN campaigns c ON c.id = t.campaign_id
+      WHERE t.influencer_id = ?
       `,
       [influencerId]
     );
 
-    if (!row) return res.status(404).json({ success:false, message:'Influencer not found' });
+    // 2️⃣ Referral earnings
+    const [[referralStats]] = await db.execute(
+      `
+      SELECT
+        IFNULL(SUM(clicks), 0) AS referral_clicks,
+        IFNULL(SUM(conversions), 0) AS referral_conversions,
+        IFNULL(SUM(referral_reward), 0) AS referral_earnings
+      FROM referrals
+      WHERE referrer_id = ?
+      `,
+      [influencerId]
+    );
 
-    // (then continue previous logic to collect campaign/referral summaries...)
-    // Return manager fields inside data:
-    const data = {
-      id: row.id,
-      name: row.name,
-      email: row.email,
-      referral_code: row.referral_code,
-      manager_id: row.manager_id || null,
-      manager_name: row.manager_name || null,
-      manager_email: row.manager_email || null,
-      // ... plus existing campaign/referral aggregates (as in previous controller)
-    };
+    // 3️⃣ Influencer + Manager
+    const [[user]] = await db.execute(
+      `
+      SELECT 
+        i.id,
+        i.email,
+        i.referral_code,
+        m.name AS manager_name,
+        m.email AS manager_email
+      FROM influencer i
+      LEFT JOIN referrals r ON r.referred_id = i.id
+      LEFT JOIN influencer m ON m.id = r.referrer_id
+      WHERE i.id = ?
+      LIMIT 1
+      `,
+      [influencerId]
+    );
 
-    return res.json({ success: true, data });
+    const total_earnings =
+      Number(campaignStats.campaign_earnings) +
+      Number(referralStats.referral_earnings);
+
+    return res.json({
+      success: true,
+      data: {
+        id: user.id,
+        email: user.email,
+        referral_code: user.referral_code,
+
+        manager_name: user.manager_name,
+        manager_email: user.manager_email,
+
+        campaign_clicks: Number(campaignStats.campaign_clicks),
+        campaign_conversions: Number(campaignStats.campaign_conversions),
+        campaign_earnings: Number(campaignStats.campaign_earnings),
+
+        referral_clicks: Number(referralStats.referral_clicks),
+        referral_conversions: Number(referralStats.referral_conversions),
+        referral_earnings: Number(referralStats.referral_earnings),
+
+        total_earnings: Number(total_earnings)
+      }
+    });
 
   } catch (err) {
-    console.error('Influencer Dashboard Error:', err);
-    return res.status(500).json({ success:false, message:'Failed to load dashboard' });
+    console.error("Influencer dashboard error:", err);
+    res.status(500).json({ success: false, message: "Dashboard load failed" });
   }
 };
+
 
 
 
