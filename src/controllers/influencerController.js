@@ -14,6 +14,104 @@ const { STATUS_CODE } = require('../utils/statusCode');
 // controllers/influencer.controller.js (update influencerDashboard)
 const influencerDashboard = async (req, res) => {
   try {
+    const influencerId = req.user.id; // make sure auth middleware sets this
+
+    // 1) Campaign stats & earnings (use campaign payouts)
+    const [[campaignStats]] = await db.execute(
+      `
+      SELECT
+        IFNULL(SUM(t.clicks), 0) AS campaign_clicks,
+        IFNULL(SUM(t.conversions), 0) AS campaign_conversions,
+        IFNULL(SUM(t.conversions * IFNULL(c.payout,0)), 0) AS campaign_earnings
+      FROM tracking t
+      LEFT JOIN campaigns c ON c.id = t.campaign_id
+      WHERE t.influencer_id = ?
+        AND (t.source IS NULL OR t.source = 'campaign')
+      `,
+      [influencerId]
+    );
+
+    // 2) Referral stats & earnings (fixed 50 INR per referral conversion)
+    const [[referralStats]] = await db.execute(
+      `
+      SELECT
+        IFNULL(SUM(clicks), 0) AS referral_clicks,
+        IFNULL(SUM(conversions), 0) AS referral_conversions,
+        IFNULL(SUM(conversions) * 50, 0) AS referral_earnings
+      FROM referrals
+      WHERE referrer_id = ?
+      `,
+      [influencerId]
+    );
+
+    // 3) Basic influencer + manager info
+    const [[userRow]] = await db.execute(
+      `
+      SELECT
+        i.id,
+        i.name,
+        i.email,
+        i.referral_code,
+        -- manager lookup: influencer who referred THIS influencer (if you keep referred_by as referral_code)
+        m.id AS manager_id,
+        m.name AS manager_name,
+        m.email AS manager_email
+      FROM influencer i
+      LEFT JOIN influencer m ON m.referral_code = i.referred_by
+      WHERE i.id = ?
+      LIMIT 1
+      `,
+      [influencerId]
+    );
+
+    if (!userRow) {
+      return res.status(STATUS_CODE.NOT_FOUND).json({
+        success: false,
+        message: 'Influencer not found'
+      });
+    }
+
+    const campaignEarnings = Number(campaignStats.campaign_earnings || 0);
+    const referralEarnings = Number(referralStats.referral_earnings || 0);
+    const totalEarnings = campaignEarnings + referralEarnings;
+
+    return res.status(STATUS_CODE.OK).json({
+      success: true,
+      data: {
+        id: userRow.id,
+        name: userRow.name,
+        email: userRow.email,
+        referral_code: userRow.referral_code,
+
+        // manager info (for sidebar)
+        manager_id: userRow.manager_id || null,
+        manager_name: userRow.manager_name || null,
+        manager_email: userRow.manager_email || null,
+
+        // campaign box
+        campaign_clicks: Number(campaignStats.campaign_clicks || 0),
+        campaign_conversions: Number(campaignStats.campaign_conversions || 0),
+        campaign_earnings: campaignEarnings,
+
+        // referral box
+        referral_clicks: Number(referralStats.referral_clicks || 0),
+        referral_conversions: Number(referralStats.referral_conversions || 0),
+        referral_earnings: referralEarnings,
+
+        // total
+        total_earnings: totalEarnings
+      }
+    });
+
+  } catch (error) {
+    console.error("Influencer Dashboard Error:", error);
+    return res.status(STATUS_CODE.INTERNAL_SERVER_ERROR).json({
+      success: false,
+      message: "Failed to load dashboard"
+    });
+  }
+
+  try {
     const influencerId = req.user.id;
 
     // 1️⃣ Campaign earnings
