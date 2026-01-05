@@ -1,12 +1,17 @@
+// routes/adminRoutes.js
 const express = require("express");
 
 // Controllers
 const { adminSignin } = require("../controllers/authController");
 
-
 // Middlewares
 const adminMiddleware = require("../middlewares/adminMiddleware");
-const { adminOverview, adminInfluencerEarnings, adminCampaignReport } = require("../controllers/adminController");
+const {
+  adminOverview,
+  adminInfluencerEarnings,
+  adminCampaignReport,
+  getAdminEarnings, // <- newly used
+} = require("../controllers/adminController");
 
 const router = express.Router();
 
@@ -16,7 +21,7 @@ const router = express.Router();
  * =========================
  */
 
-// Admin login (NO middleware here)
+// Admin login (no middleware)
 router.post("/signin", adminSignin);
 
 /**
@@ -24,6 +29,10 @@ router.post("/signin", adminSignin);
  * PROTECTED ADMIN ROUTES
  * =========================
  */
+
+// Flattened earnings rows (one row per influencer x campaign + referral rows)
+// Frontend expects: GET /v1/admin/earnings
+router.get("/earnings", adminMiddleware, getAdminEarnings);
 
 // Admin dashboard overview (totals)
 router.get("/dashboard/overview", adminMiddleware, adminOverview);
