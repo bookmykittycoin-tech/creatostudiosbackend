@@ -45,50 +45,69 @@ const adminOverview = async (req, res) => {
 /**
  * ADMIN – per-influencer summary
  */
+// controllers/adminController.js
 const adminInfluencerEarnings = async (req, res) => {
   try {
-    const [rows] = await db.execute(`
+    // allow optional query flag: ?activeOnly=1 to return only influencers with earnings
+    const activeOnly = String(req.query.activeOnly || '') === '1';
+
+    // build SQL base
+    let sql = `
       SELECT
         i.id AS influencer_id,
         i.name,
         i.email,
         i.referral_code,
 
-        -- manager (upline) : assumes influencer.referred_by stores referral_code
+        -- manager (upline)
         m.name AS manager_name,
         m.email AS manager_email,
 
-        COALESCE(SUM(t.aggr_conversions * COALESCE(c.payout,0)), 0) AS campaign_earnings,
-        COALESCE(SUM(t.aggr_conversions), 0) AS campaign_conversions,
+        -- campaign stats (use SUM without DISTINCT)
+        IFNULL(SUM(t.conversions * c.payout), 0) AS campaign_earnings,
+        IFNULL(SUM(t.conversions), 0) AS campaign_conversions,
+        IFNULL(SUM(t.clicks), 0) AS campaign_clicks,
 
-        COALESCE(r.referral_conversions, 0) AS referral_conversions,
-        COALESCE(r.referral_earnings, 0) AS referral_earnings
+        -- referral stats (pre-aggregated)
+        IFNULL(r.referral_conversions, 0) AS referral_conversions,
+        IFNULL(r.referral_earnings, 0) AS referral_earnings,
+        IFNULL(r.referral_clicks, 0) AS referral_clicks
 
       FROM influencer i
 
       LEFT JOIN influencer m
         ON m.referral_code = i.referred_by
 
-      -- aggregated tracking per influencer+campaign to avoid duplication
-      LEFT JOIN (
-        SELECT influencer_id, campaign_id, SUM(clicks) AS aggr_clicks, SUM(conversions) AS aggr_conversions
-        FROM tracking
-        GROUP BY influencer_id, campaign_id
-      ) t ON t.influencer_id = i.id
+      LEFT JOIN tracking t
+        ON t.influencer_id = i.id
 
-      LEFT JOIN campaigns c ON c.id = t.campaign_id
+      LEFT JOIN campaigns c
+        ON c.id = t.campaign_id
 
       LEFT JOIN (
-        SELECT referrer_id, SUM(conversions) AS referral_conversions, SUM(conversions) * 50 AS referral_earnings
+        SELECT
+          referrer_id,
+          SUM(conversions) AS referral_conversions,
+          SUM(conversions) * 50 AS referral_earnings,
+          SUM(clicks) AS referral_clicks
         FROM referrals
         GROUP BY referrer_id
-      ) r ON r.referrer_id = i.id
+      ) r
+        ON r.referrer_id = i.id
 
       GROUP BY i.id
-      ORDER BY (COALESCE(SUM(t.aggr_conversions * COALESCE(c.payout,0)),0) + COALESCE(r.referral_earnings,0)) DESC
-    `);
+    `;
 
-    const formatted = rows.map((r) => ({
+    // optionally only include influencers who have earnings/activity
+    if (activeOnly) {
+      sql += ` HAVING (campaign_earnings + referral_earnings) > 0 `;
+    }
+
+    sql += ` ORDER BY (campaign_earnings + referral_earnings) DESC `;
+
+    const [rows] = await db.execute(sql);
+
+    const formatted = rows.map(r => ({
       influencer_id: r.influencer_id,
       name: r.name,
       email: r.email,
@@ -96,24 +115,30 @@ const adminInfluencerEarnings = async (req, res) => {
       manager: r.manager_name ? { name: r.manager_name, email: r.manager_email } : null,
       campaign: {
         conversions: Number(r.campaign_conversions),
-        earnings: Number(r.campaign_earnings),
+        clicks: Number(r.campaign_clicks),
+        earnings: Number(r.campaign_earnings)
       },
       referral: {
         conversions: Number(r.referral_conversions),
-        earnings: Number(r.referral_earnings),
+        clicks: Number(r.referral_clicks),
+        earnings: Number(r.referral_earnings)
       },
-      total_earnings: Number(r.campaign_earnings) + Number(r.referral_earnings),
+      total_earnings: Number(r.campaign_earnings) + Number(r.referral_earnings)
     }));
 
-    return res.status(STATUS_CODE.OK).json({ success: true, data: formatted });
+    return res.status(200).json({
+      success: true,
+      data: formatted
+    });
   } catch (error) {
-    console.error('Admin Influencer Earnings Error:', error);
-    return res.status(STATUS_CODE.INTERNAL_SERVER_ERROR).json({
+    console.error("Admin Influencer Earnings Error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Failed to fetch influencer earnings',
+      message: "Failed to fetch influencer earnings"
     });
   }
 };
+
 
 /**
  * ADMIN – flattened earnings rows for frontend (one row per influencer×campaign plus referral rows)
