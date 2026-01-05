@@ -1,5 +1,83 @@
 const db = require('../config/db');
 
+
+
+const createCampaign = async (req, res) => {
+  try {
+    const {
+      campaign_name,
+      brand_name,
+      payout = 0,
+      campaign_link = null,
+      description = null,
+      status = 'active'
+    } = req.body || {};
+
+    // Basic validation
+    if (!campaign_name || !brand_name) {
+      return res.status(400).json({ success: false, message: 'campaign_name and brand_name are required' });
+    }
+    const numericPayout = Number(payout || 0);
+    if (isNaN(numericPayout) || numericPayout < 0) {
+      return res.status(400).json({ success: false, message: 'payout must be a non-negative number' });
+    }
+
+    const [result] = await db.execute(
+      `INSERT INTO campaigns
+        (campaign_name, brand_name, payout, campaign_link, description, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [campaign_name, brand_name, numericPayout, campaign_link, description, status]
+    );
+
+    // Fetch newly created campaign
+    const [[campaign]] = await db.execute(`SELECT * FROM campaigns WHERE id = ? LIMIT 1`, [result.insertId]);
+
+    return res.status(201).json({
+      success: true,
+      data: campaign
+    });
+  } catch (error) {
+    console.error("Create campaign error:", error);
+    return res.status(500).json({ success: false, message: 'Failed to create campaign' });
+  }
+};
+
+/**
+ * Delete a campaign (and related tracking rows)
+ * DELETE /v1/campaigns/:id
+ */
+const deleteCampaign = async (req, res) => {
+  const campaignId = req.params.id;
+  if (!campaignId) {
+    return res.status(400).json({ success: false, message: 'Campaign id is required' });
+  }
+
+  // Use a transaction to remove child rows safely
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    // Optionally remove tracking rows for this campaign
+    await conn.execute(`DELETE FROM tracking WHERE campaign_id = ?`, [campaignId]);
+
+    // Delete campaign
+    const [delRes] = await conn.execute(`DELETE FROM campaigns WHERE id = ?`, [campaignId]);
+
+    if (!delRes || delRes.affectedRows === 0) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, message: 'Campaign not found' });
+    }
+
+    await conn.commit();
+    return res.json({ success: true, message: 'Campaign deleted' });
+  } catch (error) {
+    await conn.rollback();
+    console.error("Delete campaign error:", error);
+    return res.status(500).json({ success: false, message: 'Failed to delete campaign' });
+  } finally {
+    try { conn.release(); } catch (_) {}
+  }
+};
 /**
  * GET ALL CAMPAIGNS
  * /v1/campaigns/data
@@ -191,5 +269,7 @@ const joinCampaign = async (req, res) => {
 module.exports = {
   allCampaigns,
   getCampaignsByIds,
-  joinCampaign
+  joinCampaign,
+  createCampaign,
+  deleteCampaign
 };
