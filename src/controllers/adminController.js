@@ -10,11 +10,7 @@ const adminOverview = async (req, res) => {
 
     const [[campaign]] = await db.execute(`
       SELECT IFNULL(SUM(t.conversions * c.payout), 0) AS campaign_earnings
-      FROM (
-        SELECT influencer_id, campaign_id, SUM(conversions) AS conversions
-        FROM tracking
-        GROUP BY influencer_id, campaign_id
-      ) t
+      FROM tracking t
       JOIN campaigns c ON c.id = t.campaign_id
     `);
 
@@ -30,59 +26,56 @@ const adminOverview = async (req, res) => {
         campaign_earnings: Number(campaign.campaign_earnings),
         referral_earnings: Number(referral.referral_earnings),
         total_payout:
-          Number(campaign.campaign_earnings) + Number(referral.referral_earnings),
-      },
+          Number(campaign.campaign_earnings) +
+          Number(referral.referral_earnings),
+      }
     });
   } catch (error) {
-    console.error('Admin Overview Error:', error);
+    console.error("Admin Overview Error:", error);
     return res.status(STATUS_CODE.INTERNAL_SERVER_ERROR).json({
       success: false,
-      message: 'Failed to load admin overview',
+      message: "Failed to load admin overview"
     });
   }
 };
 
+
 /**
- * ADMIN – per-influencer summary
+ * ADMIN INFLUENCER EARNINGS
+ * - Supports optional ?activeOnly=1 to return only influencers with >0 earnings
+ * - Supports pagination: ?page=1&pageSize=50
  */
-// controllers/adminController.js
 const adminInfluencerEarnings = async (req, res) => {
   try {
-    // allow optional query flag: ?activeOnly=1 to return only influencers with earnings
     const activeOnly = String(req.query.activeOnly || '') === '1';
+    const page = Math.max(1, parseInt(req.query.page || '1', 10));
+    const pageSize = Math.min(200, Math.max(10, parseInt(req.query.pageSize || '50', 10)));
+    const offset = (page - 1) * pageSize;
 
-    // build SQL base
-    let sql = `
+    // Base query: aggregated per influencer
+    let baseSql = `
       SELECT
         i.id AS influencer_id,
         i.name,
         i.email,
         i.referral_code,
 
-        -- manager (upline)
         m.name AS manager_name,
         m.email AS manager_email,
 
-        -- campaign stats (use SUM without DISTINCT)
         IFNULL(SUM(t.conversions * c.payout), 0) AS campaign_earnings,
         IFNULL(SUM(t.conversions), 0) AS campaign_conversions,
         IFNULL(SUM(t.clicks), 0) AS campaign_clicks,
 
-        -- referral stats (pre-aggregated)
         IFNULL(r.referral_conversions, 0) AS referral_conversions,
         IFNULL(r.referral_earnings, 0) AS referral_earnings,
         IFNULL(r.referral_clicks, 0) AS referral_clicks
 
       FROM influencer i
 
-      LEFT JOIN influencer m
-        ON m.referral_code = i.referred_by
-
-      LEFT JOIN tracking t
-        ON t.influencer_id = i.id
-
-      LEFT JOIN campaigns c
-        ON c.id = t.campaign_id
+      LEFT JOIN influencer m ON m.referral_code = i.referred_by
+      LEFT JOIN tracking t ON t.influencer_id = i.id
+      LEFT JOIN campaigns c ON c.id = t.campaign_id
 
       LEFT JOIN (
         SELECT
@@ -92,20 +85,30 @@ const adminInfluencerEarnings = async (req, res) => {
           SUM(clicks) AS referral_clicks
         FROM referrals
         GROUP BY referrer_id
-      ) r
-        ON r.referrer_id = i.id
+      ) r ON r.referrer_id = i.id
 
       GROUP BY i.id
     `;
 
-    // optionally only include influencers who have earnings/activity
+    // Add HAVING if activeOnly requested
     if (activeOnly) {
-      sql += ` HAVING (campaign_earnings + referral_earnings) > 0 `;
+      baseSql += ` HAVING (campaign_earnings + referral_earnings) > 0 `;
     }
 
-    sql += ` ORDER BY (campaign_earnings + referral_earnings) DESC `;
+    // Add ordering + pagination (count separate query)
+    const countSql = `
+      SELECT COUNT(*) AS total_count FROM (
+        ${baseSql}
+      ) tcount
+    `;
 
-    const [rows] = await db.execute(sql);
+    // fetch total count
+    const [[countRow]] = await db.execute(countSql);
+    const total = Number(countRow.total_count || 0);
+
+    // final paginated query
+    const paginatedSql = baseSql + ` ORDER BY (campaign_earnings + referral_earnings) DESC LIMIT ? OFFSET ?`;
+    const [rows] = await db.execute(paginatedSql, [pageSize, offset]);
 
     const formatted = rows.map(r => ({
       influencer_id: r.influencer_id,
@@ -126,13 +129,20 @@ const adminInfluencerEarnings = async (req, res) => {
       total_earnings: Number(r.campaign_earnings) + Number(r.referral_earnings)
     }));
 
-    return res.status(200).json({
+    return res.status(STATUS_CODE.OK).json({
       success: true,
-      data: formatted
+      data: formatted,
+      meta: {
+        total,
+        page,
+        pageSize,
+        totalPages: Math.ceil(total / pageSize)
+      }
     });
+
   } catch (error) {
     console.error("Admin Influencer Earnings Error:", error);
-    return res.status(500).json({
+    return res.status(STATUS_CODE.INTERNAL_SERVER_ERROR).json({
       success: false,
       message: "Failed to fetch influencer earnings"
     });
@@ -141,82 +151,7 @@ const adminInfluencerEarnings = async (req, res) => {
 
 
 /**
- * ADMIN – flattened earnings rows for frontend (one row per influencer×campaign plus referral rows)
- * Endpoint: GET /v1/admin/earnings  (matches what frontend used)
- */
-const getAdminEarnings = async (req, res) => {
-  try {
-    // 1) campaign-based rows (from tracking)
-    const [campaignRows] = await db.execute(`
-      SELECT
-        i.id AS influencer_id,
-        COALESCE(i.name, '') AS influencer_name,
-        i.email,
-        t.campaign_id,
-        COALESCE(c.campaign_name, CONCAT('Campaign #', t.campaign_id)) AS campaign_name,
-        COALESCE(c.brand_name, '') AS brand_name,
-        COALESCE(c.payout, 0) AS payout_per_conversion,
-        COALESCE(SUM(t.conversions), 0) AS conversions,
-        COALESCE(SUM(t.conversions) * COALESCE(c.payout, 0), 0) AS total_earning,
-        MIN(t.first_joined) AS joined_at,
-        MAX(t.last_activity) AS last_activity
-      FROM (
-        SELECT influencer_id, campaign_id,
-               SUM(clicks) AS clicks, SUM(conversions) AS conversions,
-               MIN(created_at) AS first_joined,
-               MAX(updated_at) AS last_activity
-        FROM tracking
-        GROUP BY influencer_id, campaign_id
-      ) t
-      JOIN influencer i ON i.id = t.influencer_id
-      LEFT JOIN campaigns c ON c.id = t.campaign_id
-      GROUP BY i.id, t.campaign_id
-    `);
-
-    // 2) referral-based rows (from referrals) — include as campaign_id = 1 if you keep a "System Referral" campaign,
-    // otherwise set campaign_id = NULL and campaign_name = 'Referral'
-    const [refRows] = await db.execute(`
-      SELECT
-        i.id AS influencer_id,
-        COALESCE(i.name, '') AS influencer_name,
-        i.email,
-        NULL AS campaign_id,
-        'Referral / System' AS campaign_name,
-        'Book My Kitty' AS brand_name,
-        0 AS payout_per_conversion,
-        COALESCE(SUM(r.conversions), 0) AS conversions,
-        COALESCE(SUM(r.conversions) * 50, 0) AS total_earning,
-        MIN(r.created_at) AS joined_at,
-        MAX(r.updated_at) AS last_activity
-      FROM referrals r
-      JOIN influencer i ON i.id = r.referrer_id
-      GROUP BY i.id
-    `);
-
-    // merge both lists, keep order influencer_id asc then campaign_id where available
-    const merged = [];
-    for (const c of campaignRows) merged.push(c);
-    for (const r of refRows) {
-      // if influencer already has campaign rows, keep referral as separate row
-      merged.push(r);
-    }
-
-    return res.status(STATUS_CODE.OK).json({
-      success: true,
-      data: merged
-    });
-  } catch (error) {
-    console.error('Get Admin Earnings Error:', error);
-    return res.status(STATUS_CODE.INTERNAL_SERVER_ERROR).json({
-      success: false,
-      message: 'Failed to fetch admin earnings'
-    });
-  }
-};
-
-
-/**
- * ADMIN – CAMPAIGN REPORT (unchanged but using aggregated tracking subquery)
+ * ADMIN CAMPAIGN REPORT
  */
 const adminCampaignReport = async (req, res) => {
   try {
@@ -226,27 +161,105 @@ const adminCampaignReport = async (req, res) => {
         c.campaign_name,
         c.brand_name,
         c.payout,
-        COALESCE(SUM(t.aggr_conversions), 0) AS conversions,
-        COALESCE(SUM(t.aggr_conversions) * COALESCE(c.payout,0), 0) AS total_payout
+        IFNULL(SUM(t.conversions), 0) AS conversions,
+        IFNULL(SUM(t.conversions * c.payout), 0) AS total_payout
       FROM campaigns c
-      LEFT JOIN (
-        SELECT campaign_id, SUM(conversions) AS aggr_conversions
-        FROM tracking
-        GROUP BY campaign_id
-      ) t ON t.campaign_id = c.id
+      LEFT JOIN tracking t ON t.campaign_id = c.id
       GROUP BY c.id
       ORDER BY total_payout DESC
     `);
 
-    return res.status(STATUS_CODE.OK).json({ success: true, data: rows });
+    return res.status(STATUS_CODE.OK).json({
+      success: true,
+      data: rows
+    });
+
   } catch (error) {
-    console.error('Admin Campaign Report Error:', error);
+    console.error("Admin Campaign Report Error:", error);
     return res.status(STATUS_CODE.INTERNAL_SERVER_ERROR).json({
       success: false,
-      message: 'Failed to fetch campaign report'
+      message: "Failed to fetch campaign report"
     });
   }
 };
+
+
+/**
+ * GET ADMIN EARNINGS (flattened rows)
+ * - returns an array of rows that cover:
+ *   - tracking rows (one per influencer-campaign entry)
+ *   - aggregated referral rows (one per referrer)
+ *
+ * The frontend expects a flattened dataset to group client-side.
+ */
+const getAdminEarnings = async (req, res) => {
+  try {
+    // 1) tracking rows (detailed per influencer x campaign)
+    const [trackRows] = await db.execute(`
+      SELECT
+        i.id AS influencer_id,
+        i.name AS influencer_name,
+        i.email,
+        t.campaign_id,
+        c.campaign_name,
+        c.brand_name,
+        c.payout AS payout_per_conversion,
+        t.clicks,
+        t.conversions,
+        t.created_at AS joined_at,
+        t.updated_at AS last_activity
+      FROM tracking t
+      JOIN influencer i ON i.id = t.influencer_id
+      LEFT JOIN campaigns c ON c.id = t.campaign_id
+      ORDER BY i.id, t.created_at DESC
+    `);
+
+    // 2) referral aggregated rows (one per referrer)
+    const [refRows] = await db.execute(`
+      SELECT
+        r.referrer_id AS influencer_id,
+        i.name AS influencer_name,
+        i.email,
+        NULL AS campaign_id,
+        'referral' AS campaign_name,
+        NULL AS brand_name,
+        0 AS payout_per_conversion,
+        IFNULL(SUM(r.clicks),0) AS clicks,
+        IFNULL(SUM(r.conversions),0) AS conversions,
+        MIN(r.created_at) AS joined_at,
+        MAX(r.updated_at) AS last_activity
+      FROM referrals r
+      JOIN influencer i ON i.id = r.referrer_id
+      GROUP BY r.referrer_id
+      ORDER BY r.referrer_id
+    `);
+
+    // unify arrays
+    const data = [
+      ...trackRows.map(r => ({
+        ...r,
+        payout_per_conversion: r.payout_per_conversion || 0
+      })),
+      ...refRows.map(r => ({
+        ...r,
+        payout_per_conversion: 0
+      }))
+    ];
+
+    return res.status(STATUS_CODE.OK).json({
+      success: true,
+      data
+    });
+
+  } catch (error) {
+    console.error("Get Admin Earnings Error:", error);
+    return res.status(STATUS_CODE.INTERNAL_SERVER_ERROR).json({
+      success: false,
+      message: "Failed to fetch earnings rows"
+    });
+  }
+};
+
 
 module.exports = {
   adminOverview,
