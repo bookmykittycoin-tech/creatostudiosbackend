@@ -45,6 +45,7 @@ const adminOverview = async (req, res) => {
  * - Supports optional ?activeOnly=1 to return only influencers with >0 earnings
  * - Supports pagination: ?page=1&pageSize=50
  */
+// REPLACE adminInfluencerEarnings with this implementation
 const adminInfluencerEarnings = async (req, res) => {
   try {
     const activeOnly = String(req.query.activeOnly || '') === '1';
@@ -52,86 +53,124 @@ const adminInfluencerEarnings = async (req, res) => {
     const pageSize = Math.min(200, Math.max(10, parseInt(req.query.pageSize || '50', 10)));
     const offset = (page - 1) * pageSize;
 
-    // Base query: aggregated per influencer
-    let baseSql = `
+    const conn = db;
+
+    // 1) Campaign aggregates per influencer
+    const [campaignAgg] = await conn.execute(`
       SELECT
-        i.id AS influencer_id,
-        i.name,
-        i.email,
-        i.referral_code,
-
-        m.name AS manager_name,
-        m.email AS manager_email,
-
+        t.influencer_id,
         IFNULL(SUM(t.conversions * c.payout), 0) AS campaign_earnings,
         IFNULL(SUM(t.conversions), 0) AS campaign_conversions,
-        IFNULL(SUM(t.clicks), 0) AS campaign_clicks,
+        IFNULL(SUM(t.clicks), 0) AS campaign_clicks
+      FROM tracking t
+      JOIN campaigns c ON c.id = t.campaign_id
+      GROUP BY t.influencer_id
+    `);
 
-        IFNULL(r.referral_conversions, 0) AS referral_conversions,
-        IFNULL(r.referral_earnings, 0) AS referral_earnings,
-        IFNULL(r.referral_clicks, 0) AS referral_clicks
+    const campaignMap = new Map();
+    for (const r of campaignAgg) campaignMap.set(Number(r.influencer_id), {
+      campaign_earnings: Number(r.campaign_earnings || 0),
+      campaign_conversions: Number(r.campaign_conversions || 0),
+      campaign_clicks: Number(r.campaign_clicks || 0)
+    });
 
-      FROM influencer i
+    // 2) Referral aggregates per referrer (₹50 per conversion)
+    const [refAgg] = await conn.execute(`
+      SELECT
+        r.referrer_id,
+        IFNULL(SUM(r.conversions), 0) AS referral_conversions,
+        IFNULL(SUM(r.clicks), 0) AS referral_clicks,
+        IFNULL(SUM(r.conversions) * 50, 0) AS referral_earnings
+      FROM referrals r
+      GROUP BY r.referrer_id
+    `);
 
-      LEFT JOIN influencer m ON m.referral_code = i.referred_by
-      LEFT JOIN tracking t ON t.influencer_id = i.id
-      LEFT JOIN campaigns c ON c.id = t.campaign_id
+    const refMap = new Map();
+    for (const r of refAgg) refMap.set(Number(r.referrer_id), {
+      referral_conversions: Number(r.referral_conversions || 0),
+      referral_clicks: Number(r.referral_clicks || 0),
+      referral_earnings: Number(r.referral_earnings || 0)
+    });
 
-      LEFT JOIN (
-        SELECT
-          referrer_id,
-          SUM(conversions) AS referral_conversions,
-          SUM(conversions) * 50 AS referral_earnings,
-          SUM(clicks) AS referral_clicks
-        FROM referrals
-        GROUP BY referrer_id
-      ) r ON r.referrer_id = i.id
+    // 3) To support activeOnly we need to know totals — build a base influencer list first (ids).
+    // We'll fetch influencer ids and referred_by for manager lookup.
+    const [allInfRows] = await conn.execute(`SELECT id, name, email, referral_code, referred_by FROM influencer ORDER BY id`);
 
-      GROUP BY i.id
-    `;
+    // Build arrays and a lookup
+    const allInfluencers = allInfRows.map(r => ({
+      id: Number(r.id),
+      name: r.name,
+      email: r.email,
+      referral_code: r.referral_code,
+      referred_by: r.referred_by
+    }));
 
-    // Add HAVING if activeOnly requested
-    if (activeOnly) {
-      baseSql += ` HAVING (campaign_earnings + referral_earnings) > 0 `;
+    // compose earnings for each influencer
+    const enriched = allInfluencers.map(i => {
+      const c = campaignMap.get(i.id) || { campaign_earnings: 0, campaign_conversions: 0, campaign_clicks: 0 };
+      const rf = refMap.get(i.id) || { referral_earnings: 0, referral_conversions: 0, referral_clicks: 0 };
+      return {
+        influencer_id: i.id,
+        name: i.name,
+        email: i.email,
+        referral_code: i.referral_code,
+        referred_by: i.referred_by,
+        campaign_earnings: c.campaign_earnings,
+        campaign_conversions: c.campaign_conversions,
+        campaign_clicks: c.campaign_clicks,
+        referral_earnings: rf.referral_earnings,
+        referral_conversions: rf.referral_conversions,
+        referral_clicks: rf.referral_clicks,
+        total_earnings: Number(c.campaign_earnings || 0) + Number(rf.referral_earnings || 0)
+      };
+    });
+
+    // 4) If activeOnly, filter those with total_earnings > 0
+    let filtered = enriched;
+    if (activeOnly) filtered = enriched.filter(i => (i.total_earnings || 0) > 0);
+
+    const total = filtered.length;
+
+    // 5) paginate
+    const pageRows = filtered.slice(offset, offset + pageSize);
+
+    // 6) fetch manager (upline) details for only the influencers on this page
+    // collect referred_by codes
+    const managerCodes = [...new Set(pageRows.map(r => r.referred_by).filter(x => !!x))];
+    let managerMap = new Map();
+    if (managerCodes.length > 0) {
+      // manager referral_code matches referred_by
+      const placeholders = managerCodes.map(() => '?').join(',');
+      const [manRows] = await conn.execute(
+        `SELECT id, name, email, referral_code FROM influencer WHERE referral_code IN (${placeholders})`,
+        managerCodes
+      );
+      for (const m of manRows) managerMap.set(String(m.referral_code), { id: m.id, name: m.name, email: m.email });
     }
 
-    // Add ordering + pagination (count separate query)
-    const countSql = `
-      SELECT COUNT(*) AS total_count FROM (
-        ${baseSql}
-      ) tcount
-    `;
-
-    // fetch total count
-    const [[countRow]] = await db.execute(countSql);
-    const total = Number(countRow.total_count || 0);
-
-    // final paginated query
-    const paginatedSql = baseSql + ` ORDER BY (campaign_earnings + referral_earnings) DESC LIMIT ? OFFSET ?`;
-    const [rows] = await db.execute(paginatedSql, [pageSize, offset]);
-
-    const formatted = rows.map(r => ({
+    // 7) build final response rows including manager and campaign/referral shape
+    const rows = pageRows.map(r => ({
       influencer_id: r.influencer_id,
       name: r.name,
       email: r.email,
       referral_code: r.referral_code,
-      manager: r.manager_name ? { name: r.manager_name, email: r.manager_email } : null,
+      manager: r.referred_by && managerMap.get(r.referred_by) ? managerMap.get(r.referred_by) : null,
       campaign: {
-        conversions: Number(r.campaign_conversions),
-        clicks: Number(r.campaign_clicks),
-        earnings: Number(r.campaign_earnings)
+        conversions: Number(r.campaign_conversions || 0),
+        clicks: Number(r.campaign_clicks || 0),
+        earnings: Number(r.campaign_earnings || 0)
       },
       referral: {
-        conversions: Number(r.referral_conversions),
-        clicks: Number(r.referral_clicks),
-        earnings: Number(r.referral_earnings)
+        conversions: Number(r.referral_conversions || 0),
+        clicks: Number(r.referral_clicks || 0),
+        earnings: Number(r.referral_earnings || 0)
       },
-      total_earnings: Number(r.campaign_earnings) + Number(r.referral_earnings)
+      total_earnings: Number(r.total_earnings || 0)
     }));
 
     return res.status(STATUS_CODE.OK).json({
       success: true,
-      data: formatted,
+      data: rows,
       meta: {
         total,
         page,
@@ -148,6 +187,7 @@ const adminInfluencerEarnings = async (req, res) => {
     });
   }
 };
+
 
 
 /**
