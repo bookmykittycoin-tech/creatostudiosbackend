@@ -22,10 +22,17 @@ app.use(
   })
 );
 
+// Simple request logger
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+  next();
+});
+
 // ---------- HEALTH CHECK ----------
 app.get('/', (req, res) => {
   res.status(200).send('Backend is live');
 });
+app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
 // ---------- DB TESTER (NON-FATAL) ----------
 async function testDbConnection() {
@@ -95,12 +102,34 @@ app.get('/db-test', async (req, res) => {
   }
 });
 
-// ---------- SAFE ROUTE LOADING ----------
+// ---------- SAFE ROUTE LOADING (supports router or factory) ----------
 function safeRequireRoute(path) {
   try {
-    const r = require(path);
-    // If user exported a function (factory), attempt to call it with db/app if expecting that pattern
-    return r;
+    const mod = require(path);
+
+    // If module exports a function, call it with { app, db, express } and expect a router back
+    if (typeof mod === 'function') {
+      try {
+        const maybeRouter = mod({ app, db, express });
+        // If the factory returned a router (or middleware), use it; otherwise return original export
+        if (maybeRouter && (typeof maybeRouter === 'function' || maybeRouter.stack)) {
+          return maybeRouter;
+        }
+      } catch (e) {
+        console.warn(`Route factory at ${path} threw when invoked:`, e && e.message ? e.message : e);
+        // fallthrough to try using the original export if it's a router
+      }
+    }
+
+    // If module is an object with default, try default
+    const candidate = mod.default || mod;
+    // If candidate looks like an Express router/middleware, return it
+    if (candidate && (typeof candidate === 'function' || candidate.stack)) {
+      return candidate;
+    }
+
+    // Otherwise fallback to safe stub
+    throw new Error('Route module not a router or factory');
   } catch (err) {
     console.error(`Failed to load route ${path}:`, err && err.message ? err.message : err);
     const expressRouter = require('express').Router();
@@ -111,11 +140,17 @@ function safeRequireRoute(path) {
   }
 }
 
+// Mount routes
 app.use('/v1/auth', safeRequireRoute('./routes/authRoutes'));
 app.use('/v1/influencer', safeRequireRoute('./routes/influencerRoutes'));
 app.use('/v1/campaigns', safeRequireRoute('./routes/campaignsRoutes'));
 app.use('/v1/admin', safeRequireRoute('./routes/adminRoutes'));
 app.use('/v1/referrals', safeRequireRoute('./routes/referralRoutes'));
+
+// ---------- 404 HANDLER ----------
+app.use((req, res) => {
+  res.status(404).json({ message: 'Not Found' });
+});
 
 // ---------- ERROR HANDLER ----------
 app.use((err, req, res, next) => {
@@ -173,6 +208,7 @@ async function gracefulShutdown(signal) {
     // Allow process to exit naturally; on many hosts calling process.exit is discouraged
     setTimeout(() => {
       console.log('Exiting process after graceful shutdown timeout');
+      // it's OK to exit here as a last resort
       process.exit(0);
     }, 1000);
   }
