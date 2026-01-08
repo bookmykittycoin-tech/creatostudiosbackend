@@ -3,7 +3,7 @@ const app = express();
 const cors = require("cors");
 require('dotenv').config();
 const db = require('./config/db');
-const port =process.env.PORT;
+const port =process.env.PORT || 3000;
 
 const authRoutes = require('./routes/authRoutes');
 const influencerRoute = require('./routes/influencerRoutes')
